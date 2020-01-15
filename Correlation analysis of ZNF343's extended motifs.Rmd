@@ -1,0 +1,201 @@
+---
+title: "Correlation analysis of ZNF343's extended motifs"
+author: Zheng Zuo
+date: "Jan 1, 2019"
+output:
+  html_document:
+    df_print: paged
+    theme: lumen
+    highlight: pygments
+    toc: yes
+    toc_float: yes
+  pdf_document:
+    toc: yes
+---
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+library(dplyr)
+library(magrittr)
+library(ggplot2)
+library(GenomicRanges)
+library(BSgenome.Hsapiens.UCSC.hg19)
+library(motifmatchr)
+library(TFCookbook)
+```
+
+
+```{r message=FALSE, warning=FALSE}
+border_width <- 40
+upstream_flank <- 30
+downstream_flank <- 1
+
+load("data/ZNF343_exo_peaks.RData")
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+countExo <- function(chrom, start, end, direction, exoReads = ZNF343_exo_reads_by_chrome_strand) {
+  if (direction == "+") {
+    upstream_count <- exoReads[chrom, "+"][[1]] %>%
+      filter(between(edge, start - border_width, end)) %>%
+      tally(wt = n)
+
+    downstream_count <- exoReads[chrom, "-"][[1]] %>%
+      filter(between(edge, start, end + border_width)) %>%
+      tally(wt = n)
+  }
+  else if (direction == "-") {
+    upstream_count <- exoReads[chrom, "-"][[1]] %>%
+      filter(between(edge, start, end + border_width)) %>%
+      tally(wt = n)
+
+    downstream_count <- exoReads[chrom, "+"][[1]] %>%
+      filter(between(edge, start - border_width, end)) %>%
+      tally(wt = n)
+  }
+
+  return((upstream_count + downstream_count)[[1]])
+}
+
+anchorModel <- function(anchor) {
+  # Creating anchor motif with prefixed bases
+  Anchor_pfm <- TFBSTools::PFMatrix(
+    ID = "Anchor", name = anchor,
+    profileMatrix = TFCookbook::anchorMatrix(anchor)
+  )
+
+  # Finding all anchor sites within ZNF343 ChIP-exo peaks
+  Anchor_pos <- motifmatchr::matchMotifs(Anchor_pfm, ZNF343_peaks,
+    genome = "hg19",
+    out = "positions", p.cutoff = 1e-5,
+  )[[1]] %>%
+    as_tibble() %>%
+    select(seqnames, start, end, strand) %>%
+    mutate(exo_count = mapply(
+      countExo,
+      as.character(seqnames), start, end, strand
+    ))
+
+  # Extending the anchor position by fixed upstream and downstream distances
+  Anchor_pos %<>%
+    filter(exo_count > 0) %>%
+    mutate(
+      start = if_else(strand == "+",
+        start - upstream_flank, start - downstream_flank
+      ),
+      end = if_else(strand == "+",
+        end + downstream_flank, end + upstream_flank
+      ),
+      Energy = -log(exo_count)
+    )
+
+  # Extracting full sequences surrounding the anchor sites
+  Anchor_pos$Sequence <- BSgenome::getSeq(Hsapiens,
+    names = Anchor_pos$seqnames,
+    start = Anchor_pos$start,
+    end = Anchor_pos$end,
+    strand = Anchor_pos$strand
+  ) %>% as.character()
+
+  return(TFCookbook::buildEnergyModel(Anchor_pos))
+}
+
+
+addAnchorMatrix <- function(energyMatrix, anchor, position, height){
+  energyMatrix[,position:(position+nchar(anchor)-1)] <- -height*TFCookbook::anchorMatrix(anchor)
+  
+  return(energyMatrix)
+}
+
+```
+
+
+```{r eval=FALSE, message=FALSE}
+library(furrr)
+plan(multiprocess)
+
+singleVariants <- tibble(Sequence = TFCookbook::kmer(6)) %>%
+  mutate(Mismatch = TFCookbook::countMismatch(Sequence, "GAAGCG")) %>%
+  filter(Mismatch <= 1) %>%
+  mutate(Model = furrr::future_map(Sequence, anchorModel)) %>%
+  mutate(Anchor_count = purrr::map_int(Model, function(model) length(model$residuals)))
+
+```
+
+
+```{r echo=FALSE}
+load("data/ZNF343_models.RData")
+
+singleVariants
+```
+
+```{r}
+(singleVariants %>%
+  filter(Sequence == "GAAGCG"))$Model[[1]] %>%
+  TFCookbook::getEnergyMatrix() %>%
+  addAnchorMatrix(anchor = "GAAGCG", position=31, height=0.2) %>%
+  TFCookbook::plotEnergyLogo()
+```
+
+
+```{r}
+ZNF343_SELEX.PFM <- TFBSTools::readJASPARMatrix("data/ZNF343.jaspar") %>% TFBSTools::reverseComplement()
+
+ZNF343_SELEX.PFM@profileMatrix %>%
+  TFCookbook::toEnergyMatrix() %>%
+  TFCookbook::plotEnergyLogo() +
+  ggtitle("Energy matrix based on HT-SELEX result")
+
+ggsave("images/ZNF343_SELEX.svg", width=6, height=3, units="in")
+```
+```{r}
+(ZNF343_SELEX.Coeffs <-
+  (ZNF343_SELEX.PFM@profileMatrix %>%
+  TFCookbook::toEnergyMatrix() %>%
+  TFCookbook::toCoeffs())[c(1:30, 49:51)])
+```
+
+
+```{r fig.height=10, fig.width=10}
+logo_list <- purrr::map2(
+  singleVariants$Sequence,
+  singleVariants$Model,
+  function(sequence, model) {
+    -(TFCookbook::getEnergyMatrix(model) %>%
+      addAnchorMatrix(anchor = sequence, position = 31, height = 0.2))[,21:37]
+  }
+)
+
+(logos <- ggplot() +
+  ggseqlogo::geom_logo(logo_list, method="custom", seq_type = "dna")  + 
+  ggseqlogo::theme_logo() +
+  facet_wrap(~seq_group, ncol=4, scales='free_x') +
+  ylim(-0.7, 0.7) +
+  scale_x_continuous(breaks = seq(1,17,2), label = seq(1,17,2)))
+
+
+ggsave("images/ZNF343_logos.eps", plot=logos, width=10, height=10, units="in")
+```
+
+```{r}
+Heatmap_data <- sapply(singleVariants$Model, function(x) x$coefficients[c(62:91,110:112)]) %>%
+  na.omit() %>%
+  as.data.frame()
+
+colnames(Heatmap_data) <- singleVariants$Sequence
+
+Heatmap_data$'HT-SELEX' <- ZNF343_SELEX.Coeffs
+
+Heatmap <- pheatmap::pheatmap(1-cor(Heatmap_data))
+
+ggsave("images/Heatmap_ZNF343.svg", plot=Heatmap)
+```
+
+```{r}
+singleVariants[Heatmap$tree_row$order,] %>%
+  ggplot(aes(x=Sequence, y=Anchor_count)) +
+  geom_bar(stat="identity") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.28)) +
+  xlab("Anchor sequence") +
+  ylab("Number of anchor sites within ChIP-exo peaks")
+```
+
