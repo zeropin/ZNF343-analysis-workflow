@@ -106,8 +106,8 @@ rm(ZNF343_exo_reads)
 ```
 
 ```{r eval=FALSE, include=FALSE}
-save.image("ZNF343_exo.RData")
-load("ZNF343_exo.RData")
+save.image("data/ZNF343_exo.RData")
+load("data/ZNF343_exo.RData")
 ```
 
 ## Importing ChIP-exo peaks called from MACS calling of ZNF343 data
