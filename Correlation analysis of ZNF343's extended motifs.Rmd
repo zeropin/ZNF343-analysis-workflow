@@ -13,6 +13,9 @@ output:
     toc: yes
 ---
 
+## Introduction
+This Notebook includes the analysis workflow sequal to the previous "Iterative motif analysis of ZNF343", and is used to show that it is not only feasible, but also necessary to use such an iterative analysis method to extract the full specificity of long, tandem zinc finger proteins (ZFPs). Briefly, I generated the extended motif profiles based on different hexamer anchor sites, including the GAAGCG consensus and all its 18 single variants. Using correlation analysis and hiechical clustering, it is clear that only the GAAGCG consensus and GAAGCn anchors can serve as "good" anchors to produce longer specificity profiles highly similar to published HT-SELEX results, which also lends evidence to our proposed "Sequentional recognition", or "Anchor" model about the recognition of tandem zinc finger proteins. This analysis workflow could be generalzied to analyze other long ZFPs also.
+
 ```{r message=FALSE, warning=FALSE, include=FALSE}
 library(dplyr)
 library(magrittr)
@@ -23,13 +26,14 @@ library(motifmatchr)
 library(TFCookbook)
 ```
 
-
+### Parameters used in this analysis workflow
+![](images/Anchor_GAAGCG.png)
 ```{r message=FALSE, warning=FALSE}
 border_width <- 40
 upstream_flank <- 30
 downstream_flank <- 1
 
-load("data/ZNF343_exo_peaks.RData")
+load("data/ZNF343_exo_peaks.RData") # Load processed ChIP-exo data of ZNF343, including exo reads and peaks positions in hg19 genome.
 ```
 
 ```{r message=FALSE, warning=FALSE, include=FALSE}
@@ -108,26 +112,29 @@ addAnchorMatrix <- function(energyMatrix, anchor, position, height){
 
 ```
 
+## Building recognition models based on different anchor sites
 
 ```{r eval=FALSE, message=FALSE}
-library(furrr)
+library(furrr)  # Do multi-core parallel computing
 plan(multiprocess)
 
 singleVariants <- tibble(Sequence = TFCookbook::kmer(6)) %>%
-  mutate(Mismatch = TFCookbook::countMismatch(Sequence, "GAAGCG")) %>%
-  filter(Mismatch <= 1) %>%
-  mutate(Model = furrr::future_map(Sequence, anchorModel)) %>%
-  mutate(Anchor_count = purrr::map_int(Model, function(model) length(model$residuals)))
-
+  mutate(Mismatch = TFCookbook::countMismatch(Sequence, "GAAGCG")) %>%  
+  filter(Mismatch <= 1) %>% # Enumerating all single variants of GAAGCG anchor sites
+  mutate(Model = furrr::future_map(Sequence, anchorModel)) %>% # Extracting extended specificity info based on each anchor site
+  mutate(Anchor_count = purrr::map_int(Model, function(model) length(model$residuals))) # Counting the number of anchors found within ChIP-exo peaks
 ```
 
 
 ```{r echo=FALSE}
 load("data/ZNF343_models.RData")
 
-singleVariants
+singleVariants %>%
+  arrange(Mismatch)
 ```
 
+
+Drawing the extended motif profile of ZNF343 based on consensus GAAGCG anchor site
 ```{r}
 (singleVariants %>%
   filter(Sequence == "GAAGCG"))$Model[[1]] %>%
@@ -137,13 +144,15 @@ singleVariants
 ```
 
 
+## Importing HT-SELEX result from JASPAR database
 ```{r}
-ZNF343_SELEX.PFM <- TFBSTools::readJASPARMatrix("data/ZNF343.jaspar") %>% TFBSTools::reverseComplement()
+ZNF343_SELEX.PFM <- TFBSTools::readJASPARMatrix("data/ZNF343.jaspar") %>% TFBSTools::reverseComplement() # Importing PFM from JASPAR database
 
 ZNF343_SELEX.PFM@profileMatrix %>%
-  TFCookbook::toEnergyMatrix() %>%
-  TFCookbook::plotEnergyLogo() +
-  ggtitle("Energy matrix based on HT-SELEX result")
+  TFCookbook::toEnergyMatrix() %>% # Converting PFM to energyMatrix based TFCookbook function toEnergyMatrix
+  TFCookbook::plotEnergyLogo() +   # Plotting Energy logo of ZNF343 HT-SELEX result
+  ggtitle("Energy matrix based on HT-SELEX result")  +
+  scale_x_discrete(label=21:37)
 
 ggsave("images/ZNF343_SELEX.svg", width=6, height=3, units="in")
 ```
@@ -154,6 +163,7 @@ ggsave("images/ZNF343_SELEX.svg", width=6, height=3, units="in")
   TFCookbook::toCoeffs())[c(1:30, 49:51)])
 ```
 
+## Ploting extended motif for each anchor site based on the ChIP-exo reads in flanking regions
 
 ```{r fig.height=10, fig.width=10}
 logo_list <- purrr::map2(
@@ -176,6 +186,10 @@ logo_list <- purrr::map2(
 ggsave("images/ZNF343_logos.eps", plot=logos, width=10, height=10, units="in")
 ```
 
+
+## Comparing extended motifs of all single variants and published HT-SELEX result
+
+### Building Heatmap and Hiechical clustering based on the correlation coefficients between pairs of extended motifs
 ```{r}
 Heatmap_data <- sapply(singleVariants$Model, function(x) x$coefficients[c(62:91,110:112)]) %>%
   na.omit() %>%
@@ -190,12 +204,16 @@ Heatmap <- pheatmap::pheatmap(1-cor(Heatmap_data))
 ggsave("images/Heatmap_ZNF343.svg", plot=Heatmap)
 ```
 
+
+### Displaying the total number anchors sites found within the ChIP-exo peaks
 ```{r}
 singleVariants[Heatmap$tree_row$order,] %>%
   ggplot(aes(x=Sequence, y=Anchor_count)) +
   geom_bar(stat="identity") +
-  theme(axis.text.x = element_text(angle = 90, vjust = 0.28)) +
+  theme(axis.text.x = element_text(angle = -90, vjust = 0.28)) +
   xlab("Anchor sequence") +
   ylab("Number of anchor sites within ChIP-exo peaks")
 ```
 
+## Summary of results
+![](images/Heatmap_ZNF343_modified.svg)
